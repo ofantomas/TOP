@@ -10,9 +10,6 @@ from networks import Policy, QuantileDoubleQFunc
 from bandit import ExpWeights
 from typing import Callable, Dict
 
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-
-
 class TOP_Agent:
 
     def __init__(
@@ -34,7 +31,8 @@ class TOP_Agent:
         n_quantiles: int = 100,
         kappa: float = 1.0,
         beta: float = 0.0,
-        bandit_lr: float = 0.1
+        bandit_lr: float = 0.1,
+        device: str = 'cpu'
         ) -> None:
         """
         Initialize DOPE agent. 
@@ -58,6 +56,8 @@ class TOP_Agent:
             kappa (float, optional): constant for Huber loss. Defaults to 1.0.
             bandit_lr (float, optional): bandit learning rate. Defaults to 0.1.
         """
+        self.device = device
+
         self.gamma = gamma
         self.tau = tau
         self.batchsize = batchsize
@@ -71,21 +71,21 @@ class TOP_Agent:
         torch.manual_seed(seed)
 
         # init critic(s)
-        self.q_funcs = QuantileDoubleQFunc(state_dim, action_dim, n_quantiles=n_quantiles, hidden_size=hidden_size).to(device)
+        self.q_funcs = QuantileDoubleQFunc(state_dim, action_dim, n_quantiles=n_quantiles, hidden_size=hidden_size).to(self.device)
         self.target_q_funcs = copy.deepcopy(self.q_funcs)
         self.target_q_funcs.eval()
         for p in self.target_q_funcs.parameters():
             p.requires_grad = False
 
         # init actor
-        self.policy = Policy(state_dim, action_dim, hidden_size=hidden_size).to(device)
+        self.policy = Policy(state_dim, action_dim, hidden_size=hidden_size).to(self.device)
         self.target_policy = copy.deepcopy(self.policy)
         for p in self.target_policy.parameters():
             p.requires_grad = False
 
         # set distributional parameters
         taus = torch.arange(
-            0, n_quantiles+1, device=device, dtype=torch.float32) / n_quantiles
+            0, n_quantiles+1, device=self.device, dtype=torch.float32) / n_quantiles
         self.tau_hats = ((taus[1:] + taus[:-1]) / 2.0).view(1, n_quantiles)
         self.n_quantiles = n_quantiles
         self.kappa = kappa
@@ -129,7 +129,7 @@ class TOP_Agent:
         """
         if state_filter:
             state = state_filter(state)
-        state = torch.Tensor(state).view(1,-1).to(device)
+        state = torch.Tensor(state).view(1,-1).to(self.device)
         with torch.no_grad():
             action = self.policy(state)
         if not deterministic:
@@ -246,14 +246,14 @@ class TOP_Agent:
         for i in range(n_updates):
             samples = self.replay_pool.sample(self.batchsize)
             if state_filter:
-                state_batch = torch.FloatTensor(state_filter(samples.state)).to(device)
-                nextstate_batch = torch.FloatTensor(state_filter(samples.nextstate)).to(device)
+                state_batch = torch.FloatTensor(state_filter(samples.state)).to(self.device)
+                nextstate_batch = torch.FloatTensor(state_filter(samples.nextstate)).to(self.device)
             else:
-                state_batch = torch.FloatTensor(samples.state).to(device)
-                nextstate_batch = torch.FloatTensor(samples.nextstate).to(device)
-            action_batch = torch.FloatTensor(samples.action).to(device)
-            reward_batch = torch.FloatTensor(samples.reward).to(device).unsqueeze(1)
-            done_batch = torch.FloatTensor(samples.real_done).to(device).unsqueeze(1)
+                state_batch = torch.FloatTensor(samples.state).to(self.device)
+                nextstate_batch = torch.FloatTensor(samples.nextstate).to(self.device)
+            action_batch = torch.FloatTensor(samples.action).to(self.device)
+            reward_batch = torch.FloatTensor(samples.reward).to(self.device).unsqueeze(1)
+            done_batch = torch.FloatTensor(samples.real_done).to(self.device).unsqueeze(1)
             
             # update q-funcs
             q1_loss_step, q2_loss_step, quantiles1_step, quantiles2_step = self.update_q_functions(state_batch, action_batch, reward_batch, nextstate_batch, done_batch, beta)

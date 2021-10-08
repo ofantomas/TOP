@@ -7,15 +7,16 @@ from gym.wrappers import RescaleAction
 import numpy as np
 import torch
 import pdb
-from torch.utils.tensorboard import SummaryWriter
+import time
 from typing import Dict, Callable
+import wandb
 
 from top import TOP_Agent
 from utils import MeanStdevFilter, Transition, make_gif, make_checkpoint
 
 GYM_ENV = gym.wrappers.time_limit.TimeLimit
 
-def train_agent_model_free(agent: DOPE_Agent, env: GYM_ENV, params: Dict) -> None:
+def train_agent_model_free(agent: TOP_Agent, env: GYM_ENV, params: Dict) -> None:
     
     update_timestep = params['update_every_n_steps']
     seed = params['seed']
@@ -54,10 +55,9 @@ def train_agent_model_free(agent: DOPE_Agent, env: GYM_ENV, params: Dict) -> Non
     max_steps = env.spec.max_episode_steps
 
     com = f"DOPE_{params['env']}_nq{params['n_quantiles']}_{params['bandit_lr']}_seed{seed}"
-    writer = SummaryWriter(log_dir='dope_runs/' + com)
-
+    start = time.time()
     prev_episode_reward = 0
-    while samples_number < 1e6:
+    while samples_number < params['env_steps']:
         time_step = 0
         episode_reward = 0
         i_episode += 1
@@ -94,29 +94,24 @@ def train_agent_model_free(agent: DOPE_Agent, env: GYM_ENV, params: Dict) -> Non
                 n_updates += 1
             # logging
             if cumulative_timestep % log_interval == 0 and cumulative_timestep > n_collect_steps:
-                writer.add_scalar('Loss/Q-func_1', q1_loss, n_updates)
-                writer.add_scalar('Loss/Q-func_2', q2_loss, n_updates)
-                writer.add_scalar('Loss/WD', avg_wd, n_updates)
-                writer.add_scalar('Distributions/Mean_1', torch.mean(q1), n_updates)
-                writer.add_scalar('Distributions/Median_1', torch.median(q1), n_updates)
-                writer.add_scalar('Distributions/Mean_2', torch.mean(q2), n_updates)
-                writer.add_scalar('Distributions/Median_2', torch.median(q2), n_updates)
 
                 # bandit tracking
-                writer.add_scalar('Distributions/optimism', optimism, n_updates)
+                wandb_log_dict = {'Loss/Q-func_1': q1_loss, 'Loss/Q-func_2': q2_loss, 'Loss/WD': avg_wd,
+                                  'Distributions/Mean_1': torch.mean(q1), 'Distributions/Median_1': torch.median(q1),
+                                  'Distributions/Mean_2': torch.mean(q2), 'Distributions/Median_2': torch.median(q2),
+                                  'Distributions/optimism': optimism, 'timesteps': samples_number}
                 arm_probs = agent.TDC.get_probs() 
                 for i, p in enumerate(arm_probs):
-                    writer.add_scalar(f'Distributions/arm{i}', p, n_updates)
-
+                    wandb_log_dict.update({f'Distributions/arm{i}': p})
                 if pi_loss:
-                    writer.add_scalar('Loss/policy', pi_loss, n_updates)
+                    wandb_log_dict.update({'Loss/policy': pi_loss})
                 avg_length = np.mean(episode_steps)
                 running_reward = np.mean(episode_rewards)
                 eval_reward = evaluate_agent(env, agent, state_filter, n_starts=n_evals)
-                writer.add_scalar('Reward/Train', running_reward, cumulative_timestep)
-                writer.add_scalar('Reward/Test', eval_reward, cumulative_timestep)
-                progress_str = f'Episode {i_episode} \t Samples {samples_number} \t Avg length: {avg_length} \t Test reward: {eval_reward} \t Train reward: {running_reward} \t WD: {avg_wd} \t Number of Updates: {n_updates}'
-                print(progress_str)
+                wandb_log_dict.update({'Reward/Train': running_reward, 'Reward/Test': eval_reward})
+                wandb.log(wandb_log_dict, step=samples_number)
+                print("Episode: {} \t Samples: {} \t Avg length: {:.2f} \t Test reward: {:.2f} \t Train reward: {:.2f} \t WD: {:.2f} \t Number of Updates: {} \t FPS: {}".format(
+                    i_episode, samples_number, avg_length, eval_reward, running_reward, avg_wd, n_updates, int(samples_number / (time.time() - start))))
                 episode_steps = []
                 episode_rewards = []
             if cumulative_timestep % gif_interval == 0:
@@ -135,7 +130,7 @@ def train_agent_model_free(agent: DOPE_Agent, env: GYM_ENV, params: Dict) -> Non
 
 def evaluate_agent(
     env: GYM_ENV,
-    agent: DOPE_Agent,
+    agent: TOP_Agent,
     state_filter: Callable,
     n_starts: int = 1) -> float:
     
@@ -156,19 +151,23 @@ def main():
     parser = ArgumentParser()
     parser.add_argument('--env', type=str, default='HalfCheetah-v2')
     parser.add_argument('--seed', type=int, default=100)
-    parser.add_argument('--use_obs_filter', dest='obs_filter', action='store_true')
-    parser.add_argument('--update_every_n_steps', type=int, default=1)
-    parser.add_argument('--n_random_actions', type=int, default=25000)
-    parser.add_argument('--n_collect_steps', type=int, default=1000)
-    parser.add_argument('--n_evals', type=int, default=1)
-    parser.add_argument('--save_model', dest='save_model', action='store_true')
-    parser.add_argument('--n_quantiles', type=int, default=50)
-    parser.add_argument('--bandit_lr', type=float, default=0.1)
+    parser.add_argument('--env-steps', type=int, default=1000000)
+    parser.add_argument('--use-obs-filter', dest='obs_filter', action='store_true')
+    parser.add_argument('--update-every-n-steps', type=int, default=1)
+    parser.add_argument('--n-random-actions', type=int, default=25000)
+    parser.add_argument('--n-collect_steps', type=int, default=1000)
+    parser.add_argument('--n-evals', type=int, default=1)
+    parser.add_argument('--save-model', dest='save_model', action='store_true')
+    parser.add_argument('--n-quantiles', type=int, default=50)
+    parser.add_argument('--bandit-lr', type=float, default=0.1)
+    parser.add_argument('--device', type=str, default='cpu')
+    parser.add_argument('--wandb-project', type=str, default='default')
     parser.set_defaults(obs_filter=False)
     parser.set_defaults(save_model=False)
 
     args = parser.parse_args()
     params = vars(args)
+    wandb.init(project=args.wandb_project, config=args)
 
     seed = params['seed']
     env = gym.make(params['env'])
@@ -178,12 +177,13 @@ def main():
     action_dim = env.action_space.shape[0]
 
     # initialize agent
-    agent = DOPE_Agent(seed, state_dim, action_dim, \
-        n_quantiles=params['n_quantiles'], bandit_lr=params['bandit_lr'])
+    agent = TOP_Agent(seed, state_dim, action_dim, \
+        n_quantiles=params['n_quantiles'], bandit_lr=params['bandit_lr'],
+        device=params['device'])
 
     # train agent 
     train_agent_model_free(agent=agent, env=env, params=params)
-
+    wandb.finish()
 
 if __name__ == '__main__':
     main()
