@@ -56,6 +56,8 @@ def train_agent_model_free(agent: TOP_Agent, env: GYM_ENV, params: Dict) -> None
 
     com = f"DOPE_{params['env']}_nq{params['n_quantiles']}_{params['bandit_lr']}_seed{seed}"
     start = time.time()
+
+    evaluation_rewards = []
     prev_episode_reward = 0
     while samples_number < params['env_steps']:
         time_step = 0
@@ -109,8 +111,10 @@ def train_agent_model_free(agent: TOP_Agent, env: GYM_ENV, params: Dict) -> None
                 running_reward = np.mean(episode_rewards)
                 eval_reward = evaluate_agent(env, agent, state_filter, n_starts=n_evals)
                 wandb_log_dict.update({'Reward/Train': running_reward, 'Reward/Test': eval_reward})
+                evaluation_rewards.append(eval_reward)
+                np.save('dope_runs/' + com, evaluation_rewards)
                 wandb.log(wandb_log_dict, step=samples_number)
-                print("Episode: {} \t Samples: {} \t Avg length: {:.2f} \t Test reward: {:.2f} \t Train reward: {:.2f} \t WD: {:.2f} \t Number of Updates: {} \t FPS: {}".format(
+                print("Episode: {6:d} \t Samples: {8:d} \t Avg length: {:.2f} \t Test reward: {:.2f} \t Train reward: {:.2f} \t WD: {:.2f} \t Number of Updates: {8:d} \t FPS: {}".format(
                     i_episode, samples_number, avg_length, eval_reward, running_reward, avg_wd, n_updates, int(samples_number / (time.time() - start))))
                 episode_steps = []
                 episode_rewards = []
